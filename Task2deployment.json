@@ -1,0 +1,661 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "numberOfRdshInstances": {
+            "defaultValue": 1,
+            "type": "Int",
+            "metadata": {
+                "description": "Number of RemoteDesktopSessionHosts"
+            }
+        }	
+    },
+    "variables": {
+		"numberOfCBInstances":2,
+		"numberOfWebGwInstances":2,
+		"imageSKU":"2016-Datacenter",
+		"rdshVmSize": "Standard_D2_V2",
+		"GwnWebVmSize":"Standard_A2",
+		"dnsLabelPrefix":"rdtest",
+		"ExistingADDomainName":"rdstesting.com",
+		"ADVnetName":"IgniteResourceGroup-vnet",
+		"ADSubnetName":"default",
+		"ADUsername":"testuser",
+		"ADPassword":"Pass@123456789",
+		"VMsadminUsername":"testuser",
+		"VMsadminPassword":"password@123",
+        "gwdnsLabelPrefix": "[toLower(concat('gwdns', resourceGroup().name))]",
+        "cbdnsLabelPrefix": "[toLower(concat('cbdns', resourceGroup().name))]",
+        "storageAccountName": "[tolower(concat('rdstorage', uniqueString(resourceGroup().id)))]",
+        "storageAccountType": "Standard_LRS",
+        "uniqueStorageAccountContainerName": "[toLower(concat('sac', resourceGroup().name))]",
+        "imagePublisher": "MicrosoftWindowsServer",
+        "imageOffer": "WindowsServer",
+        "dnsServerPrivateIp": "172.20.25.4",
+        "subnet-id": "[concat(resourceId('IgniteResourceGroup','Microsoft.Network/virtualNetworks',variables('ADVnetName')),'/subnets/',variables('ADSubnetName'))]",
+        "brokerIpRef": "brokerpublicIp",
+        "gatewayIpRef": "gatewaypublicIp",
+        "assetLocation": "https://raw.githubusercontent.com/dimple720/rdsdeploy/master/git.zip"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Network/publicIPAddresses",
+            "name": "[variables('gatewayIpRef')]",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "publicIPAllocationMethod": "Dynamic",
+                "dnsSettings": {
+                    "domainNameLabel": "[variables('gwdnsLabelPrefix')]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Network/publicIPAddresses",
+            "name": "[variables('brokerIpRef')]",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "publicIPAllocationMethod": "Dynamic",
+                "dnsSettings": {
+                    "domainNameLabel": "[variables('cbdnsLabelPrefix')]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Storage/storageAccounts",
+            "name": "[variables('storageAccountName')]",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "accountType": "[variables('storageAccountType')]"
+            }
+        },
+        {
+            "type": "Microsoft.Compute/availabilitySets",
+            "name": "gw-availabilityset",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]"
+        },
+        {
+            "type": "Microsoft.Compute/availabilitySets",
+            "name": "cb-availabilityset",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]"
+        },
+        {
+            "type": "Microsoft.Compute/availabilitySets",
+            "name": "rdsh-availabilityset",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]"
+        },
+        {
+            "type": "Microsoft.Network/loadBalancers",
+            "name": "loadBalancer",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "frontendIPConfigurations": [
+                    {
+                        "name": "LBFE",
+                        "properties": {
+                            "publicIPAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIPAddresses',variables('gatewayIpRef'))]"
+                            }
+                        }
+                    }
+                ],
+                "backendAddressPools": [
+                    {
+                        "name": "LBBAP"
+                    }
+                ],
+                "loadBalancingRules": [
+                    {
+                        "name": "LBRule01",
+                        "properties": {
+                            "frontendIPConfiguration": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','loadbalancer'),'/frontendIPConfigurations/LBFE')]"
+                            },
+                            "backendAddressPool": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','loadbalancer'),'/backendAddressPools/LBBAP')]"
+                            },
+                            "protocol": "Tcp",
+                            "frontendPort": 443,
+                            "backendPort": 443,
+                            "enableFloatingIP": false,
+                            "idleTimeoutInMinutes": 5,
+                            "loadDistribution": "SourceIPProtocol",
+                            "probe": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','loadbalancer'),'/probes/tcpProbe')]"
+                            }
+                        }
+                    },
+                    {
+                        "name": "LBRule02",
+                        "properties": {
+                            "frontendIPConfiguration": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','loadbalancer'),'/frontendIPConfigurations/LBFE')]"
+                            },
+                            "backendAddressPool": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','loadbalancer'),'/backendAddressPools/LBBAP')]"
+                            },
+                            "protocol": "Udp",
+                            "frontendPort": 3391,
+                            "backendPort": 3391,
+                            "enableFloatingIP": false,
+                            "idleTimeoutInMinutes": 5,
+                            "loadDistribution": "SourceIPProtocol",
+                            "probe": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','loadbalancer'),'/probes/tcpProbe')]"
+                            }
+                        }
+                    }
+                ],
+                "probes": [
+                    {
+                        "name": "tcpProbe",
+                        "properties": {
+                            "protocol": "Tcp",
+                            "port": 443,
+                            "intervalInSeconds": 5,
+                            "numberOfProbes": 2
+                        }
+                    },
+                    {
+                        "name": "tcpProbe01",
+                        "properties": {
+                            "protocol": "Tcp",
+                            "port": 3391,
+                            "intervalInSeconds": 5,
+                            "numberOfProbes": 2
+                        }
+                    }
+                ],
+                "inboundNatRules": [
+                    {
+                        "name": "rdp",
+                        "properties": {
+                            "frontendIPConfiguration": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','loadBalancer'),'/frontendIPConfigurations/LBFE')]"
+                            },
+                            "protocol": "tcp",
+                            "frontendPort": 3389,
+                            "backendPort": 3389,
+                            "enableFloatingIP": false
+                        }
+                    }
+                ]
+            },
+            "dependsOn": [
+                "[concat('Microsoft.Network/publicIPAddresses/',variables('gatewayIpRef'))]"
+            ]
+        },
+        {
+            "type": "Microsoft.Network/loadBalancers",
+            "name": "connectionbrokerlb",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "frontendIPConfigurations": [
+                    {
+                        "name": "LBFE",
+                        "properties": {
+                            "publicIPAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIPAddresses',variables('brokerIpRef'))]"
+                            }
+                        }
+                    }
+                ],
+                "backendAddressPools": [
+                    {
+                        "name": "LBBAP"
+                    }
+                ],
+                "loadBalancingRules": [
+                    {
+                        "name": "LBRule01",
+                        "properties": {
+                            "frontendIPConfiguration": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','connectionbrokerlb'),'/frontendIPConfigurations/LBFE')]"
+                            },
+                            "backendAddressPool": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','connectionbrokerlb'),'/backendAddressPools/LBBAP')]"
+                            },
+                            "protocol": "Tcp",
+                            "frontendPort": 443,
+                            "backendPort": 443,
+                            "enableFloatingIP": false,
+                            "idleTimeoutInMinutes": 5,
+                            "loadDistribution": "SourceIPProtocol",
+                            "probe": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','connectionbrokerlb'),'/probes/tcpProbe')]"
+                            }
+                        }
+                    },
+                    {
+                        "name": "LBRule02",
+                        "properties": {
+                            "frontendIPConfiguration": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','connectionbrokerlb'),'/frontendIPConfigurations/LBFE')]"
+                            },
+                            "backendAddressPool": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','connectionbrokerlb'),'/backendAddressPools/LBBAP')]"
+                            },
+                            "protocol": "Udp",
+                            "frontendPort": 3391,
+                            "backendPort": 3391,
+                            "enableFloatingIP": false,
+                            "idleTimeoutInMinutes": 5,
+                            "loadDistribution": "SourceIPProtocol",
+                            "probe": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','connectionbrokerlb'),'/probes/tcpProbe')]"
+                            }
+                        }
+                    }
+                ],
+                "probes": [
+                    {
+                        "name": "tcpProbe",
+                        "properties": {
+                            "protocol": "Tcp",
+                            "port": 443,
+                            "intervalInSeconds": 5,
+                            "numberOfProbes": 2
+                        }
+                    },
+                    {
+                        "name": "tcpProbe01",
+                        "properties": {
+                            "protocol": "Tcp",
+                            "port": 3391,
+                            "intervalInSeconds": 5,
+                            "numberOfProbes": 2
+                        }
+                    }
+                ],
+                "inboundNatRules": [
+                    {
+                        "name": "cbrdp",
+                        "properties": {
+                            "frontendIPConfiguration": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers','connectionbrokerlb'),'/frontendIPConfigurations/LBFE')]"
+                            },
+                            "protocol": "tcp",
+                            "frontendPort": 3389,
+                            "backendPort": 3389,
+                            "enableFloatingIP": false
+                        }
+                    }
+                ]
+            },
+            "dependsOn": [
+                "[concat('Microsoft.Network/publicIPAddresses/',variables('brokerIpRef'))]"
+            ]
+        },
+        {
+            "type": "Microsoft.Network/networkInterfaces",
+            "name": "[concat('rdgw-', copyindex(),'-', variables('ADSubnetName'),'-nic')]",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]",
+            "copy": {
+                "name": "gw-nic-loop",
+                "count": "[variables('numberOfWebGwInstances')]"
+            },			
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig",
+                        "properties": {
+                            "privateIPAllocationMethod": "Dynamic",
+                            "subnet": {
+                                "id": "[variables('subnet-id')]"
+                            },
+                            "loadBalancerBackendAddressPools": [
+                                {
+                                    "id": "[concat(resourceId('Microsoft.Network/loadBalancers','loadBalancer'),'/backendAddressPools/LBBAP')]"
+                                }
+                            ],
+                            "loadBalancerInboundNatRules": [
+                            ]
+                        }
+                    }
+                ],
+                "dnsSettings": {
+                    "dnsServers": [
+                        "[variables('dnsServerPrivateIp')]"
+                    ]
+                }
+            },
+            "dependsOn": [
+                "Microsoft.Network/loadBalancers/loadBalancer"
+            ]
+        },
+        {
+            "type": "Microsoft.Network/networkInterfaces",
+            "name": "[concat('rdsh-', copyindex(), '-', variables('ADSubnetName'),'-nic')]",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]",
+            "copy": {
+                "name": "rdsh-nic-loop",
+                "count": "[parameters('numberOfRdshInstances')]"
+            },
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig",
+                        "properties": {
+                            "privateIPAllocationMethod": "Dynamic",
+                            "subnet": {
+                                "id": "[variables('subnet-id')]"
+                            }
+                        }
+                    }
+                ],
+                "dnsSettings": {
+                    "dnsServers": [
+                        "[variables('dnsServerPrivateIp')]"
+                    ]
+                }
+            },
+            "dependsOn": [
+                "Microsoft.Network/loadBalancers/loadBalancer"
+            ]
+        },
+        {
+            "type": "Microsoft.Network/networkInterfaces",
+            "name": "[concat('cb-', copyindex(), '-', variables('ADSubnetName'),'-nic')]",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]",
+            "copy": {
+                "name": "cb-nic-loop",
+                "count": "[variables('numberOfCBInstances')]"
+            },
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig",
+                        "properties": {
+                            "privateIPAllocationMethod": "Dynamic",
+                            "subnet": {
+                                "id": "[variables('subnet-id')]"
+                            },
+                            "loadBalancerBackendAddressPools": [
+                                {
+                                    "id": "[concat(resourceId('Microsoft.Network/loadBalancers','connectionbrokerlb'),'/backendAddressPools/LBBAP')]"
+                                }
+                            ],
+                            "loadBalancerInboundNatRules": []
+                        }
+                    }
+                ],
+                "dnsSettings": {
+                    "dnsServers": [
+                        "[variables('dnsServerPrivateIp')]"
+                    ]
+                }
+            },
+            "dependsOn": [
+                "Microsoft.Network/loadBalancers/connectionbrokerlb"
+            ]
+        },
+        {
+            "type": "Microsoft.Compute/virtualMachines",
+            "name": "[concat('GWnWeb-vm-',copyindex())]",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]",
+			"copy": {
+                "name": "gw-vm-loop",
+                "count": "[variables('numberOfWebGwInstances')]"
+            },
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "[variables('GwnWebVmSize')]"
+                },
+                "availabilitySet": {
+                    "id": "[resourceId('Microsoft.Compute/availabilitySets', 'gw-availabilityset')]"
+                },
+                "osProfile": {
+                    "computerName": "[concat('GWnWeb-','vm-',copyindex())]",
+                    "adminUsername": "[variables('VMsadminUsername')]",
+                    "adminPassword": "[variables('VMsadminPassword')]"
+                },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "[variables('imagePublisher')]",
+                        "offer": "[variables('imageOffer')]",
+                        "sku": "[variables('imageSKU')]",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "name": "osdisk",
+                        "vhd": {
+                            "uri": "[concat(reference(concat('Microsoft.Storage/storageAccounts/', variables('storageAccountName')),'2016-01-01').primaryEndpoints.blob,variables('uniqueStorageAccountContainerName'),'/','GWnWeb-','vm-',copyindex(),'os-disk.vhd')]"
+                        },
+                        "caching": "ReadWrite",
+                        "createOption": "FromImage"
+                    }
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces',concat('rdgw-', copyindex(),'-', variables('ADSubnetName'),'-nic'))]"
+                        }
+                    ]
+                }
+            },
+            "resources": [
+                {
+                    "type": "Microsoft.Compute/virtualMachines/extensions",
+                    "name": "[concat('GWnWeb-vm-',copyindex(),'/gateway')]",
+                    "apiVersion": "2015-06-15",
+                    "location": "[resourceGroup().location]",
+                    "properties": {
+                        "publisher": "Microsoft.Powershell",
+                        "type": "DSC",
+                        "typeHandlerVersion": "2.11",
+                        "autoUpgradeMinorVersion": true,
+                        "settings": {
+                            "ModulesUrl": "[variables('assetLocation')]",
+                            "ConfigurationFunction": "Configuration.ps1\\Gateway",
+                            "Properties": {
+                                "DomainName": "[variables('ExistingADDomainName')]",
+                                "AdminCreds": {
+                                    "UserName": "[variables('ADUsername')]",
+                                    "Password": "PrivateSettingsRef:AdminPassword"
+                                }
+                            }
+                        },
+                        "protectedSettings": {
+                            "Items": {
+                                "AdminPassword": "[variables('ADPassword')]"
+                            }
+                        }
+                    },
+                    "dependsOn": [
+                        "[resourceId('Microsoft.Compute/virtualMachines', concat('GWnWeb-vm-',copyindex()))]"
+                    ]
+                }
+            ],
+            "dependsOn": [
+                "[concat('Microsoft.Storage/storageAccounts/', variables('storageAccountName'))]",
+                "[resourceId('Microsoft.Compute/availabilitySets', 'gw-availabilityset')]",
+                "[concat('Microsoft.Network/networkInterfaces/','rdgw-', copyindex(),'-', variables('ADSubnetName'),'-nic')]"
+            ]
+        },
+        {
+            "type": "Microsoft.Compute/virtualMachines",
+            "name": "[concat('rdsh-', copyindex())]",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]",
+            "copy": {
+                "name": "rdsh-vm-loop",
+                "count": "[parameters('numberOfRdshInstances')]"
+            },
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "[variables('rdshVmSize')]"
+                },
+                "availabilitySet": {
+                    "id": "[resourceId('Microsoft.Compute/availabilitySets', 'rdsh-availabilityset')]"
+                },
+                "osProfile": {
+                    "computerName": "[concat('rdsh-', copyIndex())]",
+                    "adminUsername": "[variables('VMsadminUsername')]",
+                    "adminPassword": "[variables('VMsadminPassword')]"
+                },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "[variables('imagePublisher')]",
+                        "offer": "[variables('imageOffer')]",
+                        "sku": "[variables('imageSKU')]",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "name": "osdisk",
+                        "vhd": {
+                            "uri": "[concat(reference(concat('Microsoft.Storage/storageAccounts/', variables('storageAccountName')),'2016-01-01').primaryEndpoints.blob,variables('uniqueStorageAccountContainerName'),'/','rdsh-',copyindex(),'-os-disk.vhd')]"
+                        },
+                        "caching": "ReadWrite",
+                        "createOption": "FromImage"
+                    }
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces',concat('rdsh-', copyindex(), '-', variables('ADSubnetName'),'-nic'))]"
+                        }
+                    ]
+                }
+            },
+            "resources": [
+                {
+                    "type": "Microsoft.Compute/virtualMachines/extensions",
+                    "name": "[concat('rdsh-', copyindex(),'/sessionhost')]",
+                    "apiVersion": "2015-06-15",
+                    "location": "[resourceGroup().location]",
+                    "properties": {
+                        "publisher": "Microsoft.Powershell",
+                        "type": "DSC",
+                        "typeHandlerVersion": "2.11",
+                        "autoUpgradeMinorVersion": true,
+                        "settings": {
+                            "ModulesUrl": "[variables('assetLocation')]",
+                            "ConfigurationFunction": "Configuration.ps1\\SessionHost",
+                            "Properties": {
+                                "DomainName": "[variables('ExistingADDomainName')]",
+                                "AdminCreds": {
+                                    "UserName": "[variables('ADUsername')]",
+                                    "Password": "PrivateSettingsRef:AdminPassword"
+                                }
+                            }
+                        },
+                        "protectedSettings": {
+                            "Items": {
+                                "AdminPassword": "[variables('ADPassword')]"
+                            }
+                        }
+                    },
+                    "dependsOn": [
+                        "[resourceId('Microsoft.Compute/virtualMachines', concat('rdsh-', copyindex()))]"
+                    ]
+                }
+            ],
+            "dependsOn": [
+                "[concat('Microsoft.Storage/storageAccounts/', variables('storageAccountName'))]",
+                "[resourceId('Microsoft.Compute/availabilitySets', 'rdsh-availabilityset')]",
+                "[concat('Microsoft.Network/networkInterfaces/', 'rdsh-', copyindex(), '-', variables('ADSubnetName'),'-nic')]"
+            ]
+        },
+        {
+            "type": "Microsoft.Compute/virtualMachines",
+            "name": "[concat('cb-', copyindex())]",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]",
+            "copy": {
+                "name": "cb-vm-loop",
+                "count": "[variables('numberOfCBInstances')]"
+            },
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "[variables('rdshVmSize')]"
+                },
+                "availabilitySet": {
+                    "id": "[resourceId('Microsoft.Compute/availabilitySets', 'cb-availabilityset')]"
+                },
+                "osProfile": {
+                    "computerName": "[concat('cb-', copyIndex())]",
+                    "adminUsername": "[variables('VMsadminUsername')]",
+                    "adminPassword": "[variables('VMsadminPassword')]"
+                },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "[variables('imagePublisher')]",
+                        "offer": "[variables('imageOffer')]",
+                        "sku": "[variables('imageSKU')]",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "name": "osdisk",
+                        "vhd": {
+                            "uri": "[concat(reference(concat('Microsoft.Storage/storageAccounts/', variables('storageAccountName')),'2016-01-01').primaryEndpoints.blob,variables('uniqueStorageAccountContainerName'),'/','cb-',copyindex(),'-os-disk.vhd')]"
+                        },
+                        "caching": "ReadWrite",
+                        "createOption": "FromImage"
+                    }
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces',concat('cb-', copyindex(), '-', variables('ADSubnetName'),'-nic'))]"
+                        }
+                    ]
+                }
+            },
+            "resources": [
+                {
+                    "type": "Microsoft.Compute/virtualMachines/extensions",
+                    "name": "[concat('cb-', copyindex(),'/rdsdeployment')]",
+                    "apiVersion": "2015-06-15",
+                    "location": "[resourceGroup().location]",
+                    "properties": {
+                        "publisher": "Microsoft.Powershell",
+                        "type": "DSC",
+                        "typeHandlerVersion": "2.11",
+                        "autoUpgradeMinorVersion": true,
+                        "settings": {
+                            "ModulesUrl": "[variables('assetLocation')]",
+                            "ConfigurationFunction": "Configuration.ps1\\RDSDeployment",
+                            "Properties": {
+                                "domainName": "[variables('ExistingADDomainName')]",
+                                "AdminCreds": {
+                                    "UserName": "[variables('ADUsername')]",
+                                    "Password": "PrivateSettingsRef:AdminPassword"
+                                },
+                                "connectionBroker": "[concat('cb-', copyindex(),'.',variables('ExistingADDomainName'))]",
+                                "externalfqdn": "[reference(variables('gatewayIpRef')).dnsSettings.fqdn]",
+                                "numberOfRdshInstances": "[parameters('numberOfRdshInstances')]",
+                                "webAccessServerNamingPrefix": "GWnWeb-vm-",
+								"numberOfWebGwInstances":"[variables('numberOfWebGwInstances')]",
+                                "sessionHostNamingPrefix": "rdsh-"
+                            }
+                        },
+                        "protectedSettings": {
+                            "Items": {
+                                "AdminPassword": "[variables('ADPassword')]"
+                            }
+                        }
+                    },
+                    "dependsOn": [
+                        "[resourceId('Microsoft.Compute/virtualMachines', concat('cb-', copyindex()))]"
+                    ]
+                }
+            ],
+            "dependsOn": [
+                "[concat('Microsoft.Storage/storageAccounts/', variables('storageAccountName'))]",
+                "[resourceId('Microsoft.Compute/availabilitySets', 'cb-availabilityset')]",
+                "[concat('Microsoft.Network/networkInterfaces/', 'cb-', copyindex(), '-', variables('ADSubnetName'),'-nic')]"
+            ]
+        }
+    ]
+}
